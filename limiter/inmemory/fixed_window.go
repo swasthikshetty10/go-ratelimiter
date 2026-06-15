@@ -1,8 +1,10 @@
-package limiter
+package inmemory
 
 import (
 	"sync"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 type FixedWindow struct {
@@ -11,11 +13,11 @@ type FixedWindow struct {
 	window      time.Duration
 	count       int
 	windowStart time.Time
-	clock       Clock
+	clock       limiter.Clock
 }
 
 func NewFixedWindow(limit int, window time.Duration) *FixedWindow {
-	clock := RealClock{}
+	clock := limiter.RealClock{}
 	return &FixedWindow{
 		limit:       limit,
 		window:      window,
@@ -25,11 +27,11 @@ func NewFixedWindow(limit int, window time.Duration) *FixedWindow {
 	}
 }
 
-func (f *FixedWindow) Allow() Result {
+func (f *FixedWindow) Allow() limiter.Result {
 	return f.AllowN(1)
 }
 
-func (f *FixedWindow) AllowN(n int) Result {
+func (f *FixedWindow) AllowN(n int) limiter.Result {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -45,7 +47,7 @@ func (f *FixedWindow) AllowN(n int) Result {
 	}
 
 	if n <= 0 {
-		return Result{
+		return limiter.Result{
 			Allowed:    true,
 			Remaining:  f.limit - f.count,
 			Limit:      f.limit,
@@ -54,7 +56,7 @@ func (f *FixedWindow) AllowN(n int) Result {
 	}
 
 	if f.count+n > f.limit {
-		return Result{
+		return limiter.Result{
 			Allowed:    false,
 			Remaining:  0,
 			Limit:      f.limit,
@@ -63,7 +65,7 @@ func (f *FixedWindow) AllowN(n int) Result {
 	}
 
 	f.count += n
-	return Result{
+	return limiter.Result{
 		Allowed:    true,
 		Remaining:  f.limit - f.count,
 		Limit:      f.limit,

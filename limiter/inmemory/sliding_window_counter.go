@@ -1,8 +1,10 @@
-package limiter
+package inmemory
 
 import (
 	"sync"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 type SlidingWindowCounter struct {
@@ -12,12 +14,12 @@ type SlidingWindowCounter struct {
 	currCount   float64
 	prevCount   float64
 	windowStart time.Time
-	clock       Clock
+	clock       limiter.Clock
 }
 
 func NewSlidingWindowCounter(limit int, window time.Duration) *SlidingWindowCounter {
 
-	clock := RealClock{}
+	clock := limiter.RealClock{}
 	return &SlidingWindowCounter{
 		limit:       limit,
 		window:      window,
@@ -28,11 +30,11 @@ func NewSlidingWindowCounter(limit int, window time.Duration) *SlidingWindowCoun
 	}
 }
 
-func (s *SlidingWindowCounter) Allow() Result {
+func (s *SlidingWindowCounter) Allow() limiter.Result {
 	return s.AllowN(1)
 }
 
-func (s *SlidingWindowCounter) AllowN(n int) Result {
+func (s *SlidingWindowCounter) AllowN(n int) limiter.Result {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -69,7 +71,7 @@ func (s *SlidingWindowCounter) AllowN(n int) Result {
 	}
 
 	if n <= 0 {
-		return Result{
+		return limiter.Result{
 			Allowed:    true,
 			Remaining:  max(0, int(float64(s.limit)-estimatedCount)),
 			Limit:      s.limit,
@@ -78,7 +80,7 @@ func (s *SlidingWindowCounter) AllowN(n int) Result {
 	}
 
 	if estimatedCount+float64(n) > float64(s.limit) {
-		return Result{
+		return limiter.Result{
 			Allowed:    false,
 			Remaining:  0,
 			Limit:      s.limit,
@@ -88,7 +90,7 @@ func (s *SlidingWindowCounter) AllowN(n int) Result {
 
 	s.currCount += float64(n)
 
-	return Result{
+	return limiter.Result{
 		Allowed:    true,
 		Remaining:  max(0, int(float64(s.limit)-(estimatedCount+float64(n)))),
 		Limit:      s.limit,

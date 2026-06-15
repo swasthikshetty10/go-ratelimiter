@@ -1,8 +1,10 @@
-package limiter
+package inmemory
 
 import (
 	"sync"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 type TokenBucket struct {
@@ -11,11 +13,11 @@ type TokenBucket struct {
 	capacity   int
 	tokens     float64
 	lastRefill time.Time
-	clock      Clock
+	clock      limiter.Clock
 }
 
 func NewTokenBucket(rate float64, capacity int) *TokenBucket {
-	clock := RealClock{}
+	clock := limiter.RealClock{}
 	return &TokenBucket{
 		rate:       rate,
 		capacity:   capacity,
@@ -25,11 +27,11 @@ func NewTokenBucket(rate float64, capacity int) *TokenBucket {
 	}
 }
 
-func (t *TokenBucket) Allow() Result {
+func (t *TokenBucket) Allow() limiter.Result {
 	return t.AllowN(1)
 }
 
-func (t *TokenBucket) AllowN(n int) Result {
+func (t *TokenBucket) AllowN(n int) limiter.Result {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -44,7 +46,7 @@ func (t *TokenBucket) AllowN(n int) Result {
 	t.lastRefill = now
 
 	if n <= 0 {
-		return Result{
+		return limiter.Result{
 			Allowed:    true,
 			Remaining:  int(t.tokens),
 			Limit:      t.capacity,
@@ -58,7 +60,7 @@ func (t *TokenBucket) AllowN(n int) Result {
 		if t.rate > 0 {
 			retryAfter = time.Duration(missing / t.rate * float64(time.Second))
 		}
-		return Result{
+		return limiter.Result{
 			Allowed:    false,
 			Remaining:  0,
 			Limit:      t.capacity,
@@ -67,7 +69,7 @@ func (t *TokenBucket) AllowN(n int) Result {
 	}
 
 	t.tokens -= float64(n)
-	return Result{
+	return limiter.Result{
 		Allowed:    true,
 		Remaining:  int(t.tokens),
 		Limit:      t.capacity,

@@ -1,9 +1,11 @@
-package limiter
+package inmemory
 
 import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 func newTestSlidingWindowCounter(t *testing.T, limit int, window time.Duration, start time.Time) *SlidingWindowCounter {
@@ -15,7 +17,7 @@ func newTestSlidingWindowCounter(t *testing.T, limit int, window time.Duration, 
 }
 
 func TestSlidingWindowCounter_ImplementsLimiter(t *testing.T) {
-	var _ Limiter = (*SlidingWindowCounter)(nil)
+	var _ limiter.Limiter = (*SlidingWindowCounter)(nil)
 }
 
 func TestSlidingWindowCounter_Allow_withinLimit(t *testing.T) {

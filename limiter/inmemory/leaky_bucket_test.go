@@ -1,10 +1,12 @@
-package limiter
+package inmemory
 
 import (
 	"math"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 func newTestLeakyBucket(t *testing.T, rate float64, capacity int, start time.Time) *LeakyBucket {
@@ -24,7 +26,7 @@ func fillLeakyBucket(lb *LeakyBucket, capacity int) {
 }
 
 func TestLeakyBucket_ImplementsLimiter(t *testing.T) {
-	var _ Limiter = (*LeakyBucket)(nil)
+	var _ limiter.Limiter = (*LeakyBucket)(nil)
 }
 
 func TestLeakyBucket_startsEmpty(t *testing.T) {

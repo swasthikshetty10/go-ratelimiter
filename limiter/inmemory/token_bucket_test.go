@@ -1,10 +1,12 @@
-package limiter
+package inmemory
 
 import (
 	"math"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 func newTestTokenBucket(t *testing.T, rate float64, capacity int, start time.Time) *TokenBucket {
@@ -22,7 +24,7 @@ func drainBucket(tb *TokenBucket, clock *fakeClock) {
 }
 
 func TestTokenBucket_ImplementsLimiter(t *testing.T) {
-	var _ Limiter = (*TokenBucket)(nil)
+	var _ limiter.Limiter = (*TokenBucket)(nil)
 }
 
 func TestTokenBucket_startsFull(t *testing.T) {

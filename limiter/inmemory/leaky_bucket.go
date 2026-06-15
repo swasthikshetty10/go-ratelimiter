@@ -1,9 +1,11 @@
-package limiter
+package inmemory
 
 import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 type LeakyBucket struct {
@@ -13,11 +15,11 @@ type LeakyBucket struct {
 
 	currVolume float64
 	lastLeak   time.Time
-	clock      Clock
+	clock      limiter.Clock
 }
 
 func NewLeakyBucket(rate float64, capacity int) *LeakyBucket {
-	clock := RealClock{}
+	clock := limiter.RealClock{}
 
 	return &LeakyBucket{
 		rate:       rate,
@@ -28,11 +30,11 @@ func NewLeakyBucket(rate float64, capacity int) *LeakyBucket {
 	}
 }
 
-func (l *LeakyBucket) Allow() Result {
+func (l *LeakyBucket) Allow() limiter.Result {
 	return l.AllowN(1)
 }
 
-func (l *LeakyBucket) AllowN(n int) Result {
+func (l *LeakyBucket) AllowN(n int) limiter.Result {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -52,7 +54,7 @@ func (l *LeakyBucket) AllowN(n int) Result {
 	}
 
 	if n <= 0 {
-		return Result{
+		return limiter.Result{
 			Allowed:    true,
 			Remaining:  freeCapacity(),
 			Limit:      l.capacity,
@@ -71,7 +73,7 @@ func (l *LeakyBucket) AllowN(n int) Result {
 			)
 		}
 
-		return Result{
+		return limiter.Result{
 			Allowed:    false,
 			Remaining:  0,
 			Limit:      l.capacity,
@@ -81,7 +83,7 @@ func (l *LeakyBucket) AllowN(n int) Result {
 
 	l.currVolume += float64(n)
 
-	return Result{
+	return limiter.Result{
 		Allowed:    true,
 		Remaining:  freeCapacity(),
 		Limit:      l.capacity,

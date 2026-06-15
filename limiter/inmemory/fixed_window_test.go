@@ -1,9 +1,11 @@
-package limiter
+package inmemory
 
 import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/swasthikshetty10/go-ratelimiter/limiter"
 )
 
 // fakeClock provides deterministic time for tests.
@@ -28,7 +30,7 @@ func newTestFixedWindow(t *testing.T, limit int, window time.Duration, start tim
 }
 
 func TestFixedWindow_ImplementsLimiter(t *testing.T) {
-	var _ Limiter = (*FixedWindow)(nil)
+	var _ limiter.Limiter = (*FixedWindow)(nil)
 }
 
 func TestFixedWindow_Allow_withinLimit(t *testing.T) {
