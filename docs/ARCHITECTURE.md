@@ -12,6 +12,12 @@ Production-quality, in-memory rate limiting for Go with zero external dependenci
 | Idiomatic Go | Small structs, explicit constructors, no framework magic |
 | Testable | Deterministic time via injectable clock (Step 2) |
 
+## Performance Targets
+
+- **O(1) operations** — each `Allow()` / `AllowN()` does constant work regardless of configured limit or request history.
+- **Zero allocations on the hot path** — `Allow()` returns a stack-allocated `Result`; no heap allocations in steady state.
+- **Many instances** — fixed memory per limiter (a handful of fields plus one mutex); suitable for thousands of independent limiter instances in one process without per-request storage growth.
+
 ## Package Layout
 
 ```
@@ -86,11 +92,13 @@ type Result struct {
     Allowed    bool
     Remaining  int     // units left in current window/bucket (best-effort per algorithm)
     Limit      int     // configured capacity
-    RetryAfter time.Duration // non-zero when Allowed == false
+    RetryAfter time.Duration // wait hint when Allowed == false; zero when allowed
 }
 ```
 
-`Remaining` and `RetryAfter` are advisory: exact meaning varies by algorithm (documented per type).
+**`Remaining`** — units the caller can still consume **after this call**, without being denied on the next single-unit request. Window algorithms report headroom against the current or estimated window count; bucket algorithms report available tokens or free queue capacity (typically floored to an integer). When `Allowed == false`, `Remaining` is `0`. SlidingWindowCounter may round the estimate slightly; treat as advisory, not a hard guarantee.
+
+**`RetryAfter`** — when `Allowed == false`, the minimum duration to wait before a single-unit `Allow()` might succeed (best-effort). Fixed/sliding window limiters usually set this to time until the window rolls or estimated load drops; token and leaky bucket limiters compute time until enough refill or leak occurs. When `Allowed == true`, `RetryAfter` is `0`. Suitable for mapping to HTTP `Retry-After` or client backoff; not a promise that the next call will succeed if other goroutines consume quota first.
 
 ### `Clock`
 
@@ -185,13 +193,19 @@ Where `elapsed` is time into the current window. This avoids storing per-request
                   └── weight decays prev contribution
 ```
 
+### Why counter, not log?
+
+The **sliding window log** stores one timestamp per admitted request and counts entries in `[now − window, now]`. It is exact, but memory and per-check work scale with **O(N)** where N is the number of requests in the window — pruning, slicing, or scanning on every `Allow()`.
+
+The **sliding window counter** keeps two counts and one window boundary — **O(1)** memory and **O(1)** work per call. It trades exactness for a small, bounded approximation at window edges. That tradeoff fits an in-memory library holding many limiter instances: per-instance cost stays fixed whether the limit is 10 or 10,000.
+
 ### Tradeoffs
 
 | Pros | Cons |
 |------|------|
-| O(1) memory | Approximation, not exact sliding window |
+| O(1) memory vs O(N) for sliding window log | Approximation, not exact sliding window |
 | Smooths fixed-window spikes | Slightly more complex than fixed window |
-| Used in production (e.g. Cloudflare, Redis pattern) | Two windows of history needed at boundaries |
+| Exact log impractical at high limits or many keys | Two windows of history needed at boundaries |
 
 ### Data Structure
 
@@ -333,6 +347,8 @@ Same mutex + time-based leak pattern as Token Bucket.
 | Hot path | `Allow()` lock → compute → unlock; no I/O, no allocations |
 | Keyed multi-tenant | Future `Manager` with `sync.Map` or sharded mutexes — out of scope for v1 |
 | `sync.RWMutex` | Not used — writes dominate; RWMutex adds complexity with no win here |
+
+**Why `sync.Mutex` instead of atomics?** Each `Allow()` reads the clock, updates time-derived state (refill, leak, or window rollover), and writes several fields as one logical decision. Atomics guard single-word updates, not that full read–compute–write sequence; emulating it with CAS loops on floats and timestamps adds complexity without benefit here. The critical section is a few arithmetic operations under the lock — contention is per-instance, so mutex overhead stays negligible compared to the work of correct time-based accounting.
 
 ## Validation (Constructors)
 
