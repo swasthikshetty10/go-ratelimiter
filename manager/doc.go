@@ -12,6 +12,6 @@
 //
 // Optional idle cleanup: set Config.MaxIdle and run Purge periodically or use RunPurge.
 //
-// Distributed backends (Redis) embed the key in Allow(ctx, key) — use those
+// Distributed backends (Redis) embed the key in AllowKey(ctx, key) — use those
 // directly without Manager.
 package manager

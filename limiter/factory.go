@@ -2,12 +2,11 @@ package limiter
 
 import "time"
 
-// Backend identifies a limiter storage implementation (in-memory, Redis, Valkey, etc.).
+// Backend identifies a limiter storage implementation (in-memory only in the core factory).
 type Backend string
 
 const (
 	BackendInMemory Backend = "inmemory"
-	// BackendRedis and BackendValkey are reserved for future distributed packages.
 )
 
 // Config holds resolved construction parameters passed to backend builders.

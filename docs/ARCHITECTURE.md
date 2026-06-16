@@ -1,25 +1,46 @@
 # Architecture
 
-Production-quality rate limiting for Go: a small core contract, functional options, and pluggable backends. The in-memory backend ships with zero external dependencies; distributed backends (Redis, Valkey, etc.) plug in via the same `Limiter` interface and factory pattern.
+Production-quality rate limiting for Go with two deliberate API surfaces:
 
-User-facing overview and quick start: [README.md](../README.md).
+- **In-memory** — `limiter.Limiter` (`Allow` / `AllowN`), factory, optional `manager` for per-key caching.
+- **Redis** — separate keyed API (`AllowKey` / `AllowNKey`) in `limiter/redis`; state lives in Redis, not in bound Go instances.
+
+The in-memory backend has zero external dependencies. Redis uses [go-redis/v9](https://github.com/redis/go-redis) and shares only **`limiter.Result`** (and optionally validators / algorithm constants) with the core — not the `Limiter` interface or core factory registry.
+
+User-facing overview: [README.md](../README.md).
+
+## Design decision: two APIs
+
+Backend interchangeability at the call site was deprioritized. Redis naturally stores state by key; wrapping that in a bound-key `Limiter` only to satisfy a shared interface added complexity without enough benefit.
+
+| | In-memory | Redis |
+|--|-----------|-------|
+| **Admission** | `lim.Allow()` / `lim.AllowN(n)` | `lim.AllowKey(ctx, key)` / `lim.AllowNKey(ctx, key, n)` |
+| **State** | Go struct per limiter | Redis key per tenant |
+| **Multi-tenant** | `manager.Get(key).Allow()` | Pass key on each call (no manager) |
+| **Core interface** | Implements `limiter.Limiter` | Own API in `limiter/redis` |
+| **Factory** | `limiter.NewInMemory` / `inmemory.New` | `redis.NewTokenBucket(...)` (per algorithm) |
+| **Shared** | — | `limiter.Result` response shape |
+
+Applications choose a backend at integration time; handler code differs slightly between paths.
 
 ## Goals
 
 | Goal | Approach |
 |------|----------|
-| Thread-safe | Per-limiter `sync.Mutex` (in-memory); atomic Lua/scripts (distributed backends) |
-| Easy to extend | `Limiter` interface + `Spec` registry per backend + one file per algorithm |
-| Clear separation | Core contract, factory/options, backend implementations are distinct packages |
-| Idiomatic Go | Small structs, functional options, blank-import registration via `init` |
-| Testable | Injectable `Clock` on in-memory backend; fake clocks in unit tests |
-| Backend-agnostic API | Applications depend on `limiter.Limiter`, not concrete types |
+| Thread-safe | Per-limiter `sync.Mutex` (in-memory); atomic Lua scripts (Redis) |
+| Easy to extend | One file per algorithm per backend; in-memory uses `Spec` registry |
+| Clear separation | Core contract, in-memory backend, Redis backend, manager are separate |
+| Idiomatic Go | Small structs, functional options, explicit constructors |
+| Testable | Injectable `Clock` (in-memory); miniredis / integration tests (Redis) |
+| Appropriate API per backend | `Limiter` for process-local; keyed API for Redis |
 
 ## Performance Targets
 
-- **O(1) operations** — each `Allow()` / `AllowN()` does constant work regardless of configured limit or request history.
-- **Zero allocations on the hot path** — `Allow()` returns a stack-allocated `Result`; no heap allocations in steady state.
-- **Many instances** — fixed memory per limiter (a handful of fields plus one mutex); suitable for thousands of independent limiter instances in one process without per-request storage growth.
+- **O(1) operations** — each admission call does constant work regardless of configured limit (excluding network latency for Redis).
+- **Zero allocations on the in-memory hot path** — `Allow()` returns a stack-allocated `Result`.
+- **Many in-memory instances** — fixed memory per limiter; use `manager` with `MaxIdle` / `MaxKeys` for many tenants.
+- **Redis** — one round trip per `AllowKey`; no Go-side limiter cache required.
 
 ## Package Layout
 
@@ -31,66 +52,70 @@ go-ratelimiter/
 │   └── ARCHITECTURE.md
 ├── examples/
 │   ├── README.md
-│   ├── basic/           # single limiter
-│   ├── batch/           # AllowN
-│   ├── middleware/      # per-user handler
-│   └── manager/         # dynamic limits + eviction
-├── limiter/             # Core: contract, factory, options, validation
+│   ├── simple/              # single in-memory limiter
+│   └── manager/
+│       ├── simple/          # per-user, same quota
+│       └── quota/           # per-user, tiered plans
+├── limiter/                 # Core: Limiter, Result, factory (in-memory only), options
 │   ├── limiter.go
 │   ├── algorithm.go
 │   ├── option.go
 │   ├── validate.go
-│   ├── factory.go
-│   └── inmemory/        # In-process backend (zero deps)
-│       ├── register.go
-│       ├── fixed_window.go
-│       ├── sliding_window_counter.go
+│   ├── factory.go           # NewInMemory + RegisterInMemory
+│   ├── inmemory/            # In-process backend (zero deps)
+│   │   ├── register.go
+│   │   └── *_window*.go, token_bucket.go, leaky_bucket.go
+│   └── redis/               # Distributed backend (go-redis/v9); separate API
+│       ├── options.go
 │       ├── token_bucket.go
-│       ├── leaky_bucket.go
 │       └── *_test.go
-└── manager/             # Optional key → limiter cache (in-memory multi-tenant)
+└── manager/                 # In-memory multi-tenant only
     ├── manager.go
-    ├── doc.go
-    └── manager_test.go
+    └── ...
 ```
 
-Future backends follow the same shape without touching core or in-memory code:
+**Not planned:** registering Redis in the core `limiter` factory (`RegisterRedis` / `NewRedis`). Redis owns its constructors and options under `limiter/redis/`.
+
+Valkey and other Redis-protocol clients work via go-redis's `redis.Scripter` interface.
+
+## Layer model
+
+### In-memory path
 
 ```
-limiter/redis/       # RegisterRedis + NewRedis (future)
-limiter/valkey/      # RegisterValkey + NewValkey (future)
+Application
+    │
+    ├─ single tenant ──► inmemory.New(...) ──► Allow() / AllowN()
+    │
+    └─ multi-tenant ───► manager.Get(key) ───► Allow() / AllowN()
+                              │
+                              ▼
+                    limiter.Limiter + limiter.Result
+                              │
+                              ▼
+                    inmemory (mutex + Clock)
 ```
 
-Each backend package owns its `init()` registration and algorithm-specific client wiring. Algorithm implementations live in the backend package because distributed limiters embed network I/O and key semantics that in-memory limiters do not share.
-
-## Layer Model
+### Redis path
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Application / HTTP middleware / gRPC interceptor       │
-└──────────────────────────┬──────────────────────────────┘
-                           │ Allow() / AllowN()
-┌──────────────────────────▼──────────────────────────────┐
-│  limiter.Limiter  +  limiter.Result                     │  ← stable contract
-└──────────────────────────┬──────────────────────────────┘
-                           │ optional: manager.Get(key)
-┌──────────────────────────▼──────────────────────────────┐
-│  Factory: NewInMemory(algo, opts...)                    │
-│  Options: WithLimit, WithWindow, WithRate, ...          │
-│  Config  →  Spec.Validate  →  Spec.Build                │
-└──────────────────────────┬──────────────────────────────┘
-                           │ implements (per backend)
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-   inmemory           redis (future)     valkey (future)
-        │
-        ▼ (in-memory only)
-      Clock
+Application
+    │
+    └─ per request ────► redis.TokenBucket.AllowKey(ctx, tenantKey)
+                              │
+                              ▼
+                    limiter.Result  (shared response type)
+                              │
+                              ▼
+                    Lua script via redis.Cmdable
+                              │
+                              ▼
+                    Redis key = prefix + tenantKey
 ```
 
-Applications import the backend they need, then call the matching constructor. The hot path is always `Limiter.Allow()` — no factory or manager involvement after lookup.
+No `manager` on the Redis path — the tenant key is passed on every admission call.
 
-## Manager (multi-tenant, in-memory)
+## Manager (in-memory multi-tenant only)
 
 Top-level `manager/` package — optional, not part of the core limiter contract.
 
@@ -129,11 +154,13 @@ TTL on **last access** only — no algorithm-specific idle checks:
 
 Purge uses `CompareAndSwap` on `lastAccess` to avoid evicting a key touched concurrently during sweep.
 
-**Do not use manager with Redis** — pass the tenant key directly to the distributed limiter instead.
+**In-memory only.** Do not use `manager` with Redis — call `AllowKey(ctx, key)` directly.
 
-See [examples/manager/](../examples/manager/) and [examples/middleware/](../examples/middleware/).
+See [examples/manager/](../examples/manager/).
 
-## Factory and Options
+## Factory and options (in-memory)
+
+The core factory registry applies **only** to the in-memory backend.
 
 ### `Config`
 
@@ -145,11 +172,11 @@ type Config struct {
     Window   time.Duration // window algorithms
     Rate     float64       // bucket algorithms (units/sec)
     Capacity int           // bucket algorithms
-    Clock    Clock         // in-memory only; ignored by distributed backends
+    Clock    Clock         // in-memory only
 }
 ```
 
-Not every field applies to every algorithm. Backend `Spec.Validate` enforces the required subset.
+Backend `Spec.Validate` enforces the required subset per algorithm.
 
 ### `Option`
 
@@ -170,9 +197,9 @@ l, err := limiter.NewInMemory(
 | `WithRate` + `WithCapacity` | Token Bucket, Leaky Bucket |
 | `WithClock` | In-memory backends only |
 
-### `Spec` registry
+### `Spec` registry (in-memory)
 
-Each `(Backend, Algorithm)` pair registers a validator and builder:
+Each algorithm registers via `RegisterInMemory` in `limiter/inmemory/register.go`:
 
 ```go
 type Spec struct {
@@ -181,32 +208,100 @@ type Spec struct {
 }
 ```
 
-Registration happens in backend `init()` via `RegisterInMemory` (and future `RegisterRedis`, etc.). The core package holds a two-level map: `registries[Backend][Algorithm]`.
-
 Construction flow:
 
-1. `applyOptions(opts)` → `Config` (per-option validation)
-2. `spec.Validate(cfg)` → algorithm-required fields present
-3. `spec.Build(cfg)` → concrete `Limiter`
+1. `applyOptions(opts)` → `Config`
+2. `spec.Validate(cfg)`
+3. `spec.Build(cfg)` → `limiter.Limiter`
 
 Sentinel errors: `ErrUnknownBackend`, `ErrUnknownAlgorithm`, `ErrInvalidLimit`, `ErrInvalidWindow`, `ErrInvalidRate`, `ErrInvalidCapacity`.
 
-### Adding a distributed backend
+## Redis backend (`limiter/redis`)
 
-To add Redis (same pattern for Valkey):
+Separate package with a Redis-native API. Depends on `github.com/redis/go-redis/v9`.
 
-1. Create `limiter/redis/` with a `Limiter` implementation per algorithm (Lua script or `INCR` + `PEXPIRE`).
-2. In `init()`, call `RegisterRedis(algo, Spec{Validate, Build})` — mirror `RegisterInMemory`.
-3. Expose `NewRedis(algo, opts ...Option)` delegating to `newLimiter(BackendRedis, ...)`.
-4. Add backend-specific options in the redis package (e.g. `WithClient`, `WithKey`) that wrap or extend `Config` before `Build`.
+### API
 
-Distributed implementations **must** return the same `Result` semantics documented below so middleware works unchanged. `WithClock` does not apply; time comes from the server.
+```go
+type TokenBucket struct { ... }
 
-## Core Abstractions
+func NewTokenBucket(opts ...Option) (*TokenBucket, error)
 
-### `Limiter`
+func (t *TokenBucket) AllowKey(ctx context.Context, key string) limiter.Result
+func (t *TokenBucket) AllowNKey(ctx context.Context, key string, n int) limiter.Result
+```
 
-The primary contract every algorithm implements:
+- **`key`** — logical tenant id (e.g. `user:123`); combined with `WithKeyPrefix` to form the Redis key.
+- **`ctx`** — passed to go-redis for timeouts and cancellation.
+- **Returns `limiter.Result`** — same response shape as in-memory for HTTP headers and logging.
+
+Optional package-local interface (not in `limiter` root):
+
+```go
+type KeyLimiter interface {
+    AllowKey(ctx context.Context, key string) limiter.Result
+    AllowNKey(ctx context.Context, key string, n int) limiter.Result
+}
+```
+
+### Options
+
+| Option | Purpose |
+|--------|---------|
+| `WithClient(c redis.Scripter)` | go-redis client, cluster, or ring (anything that runs scripts) |
+| `WithKeyPrefix(prefix string)` | Prepended to every key (e.g. `ratelimit:`) |
+| `WithRate(r float64)` | Units per second (delegates to `limiter.WithRate` for validation) |
+| `WithCapacity(n int)` | Bucket capacity |
+
+Redis options live in `limiter/redis`; they are not `limiter.Option` values on the core factory.
+
+### Fail closed
+
+When Redis cannot answer, admission **denies** the request. The library does not fail open (allow on error).
+
+| Condition | `Result` |
+|-----------|----------|
+| Redis/network error (`script.Run` fails) | `Allowed: false`, `Limit: capacity` |
+| Unexpected script output (`len(result) < 4`) | `Allowed: false`, `Limit: capacity` |
+| Empty logical `key` (`""`) | `Allowed: false`, `Limit: capacity` |
+
+`Remaining` and `RetryAfter` are zero in these cases. There is no error return from `AllowKey` / `AllowNKey` — callers treat `Allowed == false` like a rate-limit denial. For observability, wrap calls and log Redis errors at the application layer if needed.
+
+Construction errors (`ErrClientRequired`, `ErrInvalidRate`, etc.) still return from `NewTokenBucket` as usual.
+
+**Rationale:** fail closed avoids bypassing limits during outages; safer for public APIs than silently allowing traffic when Redis is down.
+
+### Implementation notes
+
+- **Atomicity** — token bucket uses an embedded Lua script (`EVAL` / `EVALSHA` via `redis.NewScript`).
+- **Time** — server-side `TIME` in Lua; `limiter.Clock` / `WithClock` do not apply.
+- **Key TTL** — Lua sets `EXPIRE` after each update: `ceil(capacity / rate) + 60` seconds so idle tenant keys are reclaimed from Redis memory.
+- **Testing** — miniredis for integration-style tests; `redis.Scripter` stub for fail-closed without dial retries.
+- **Valkey** — Redis-protocol compatible; use go-redis `Scripter` against Valkey in most deployments.
+
+### Usage
+
+```go
+bucket, err := redis.NewTokenBucket(
+    redis.WithClient(rdb),
+    redis.WithKeyPrefix("ratelimit:"),
+    redis.WithRate(10),
+    redis.WithCapacity(100),
+)
+
+r := bucket.AllowKey(ctx, "user:"+userID)
+if !r.Allowed {
+    // 429, r.RetryAfter
+}
+```
+
+Future algorithms (fixed window, sliding window counter, leaky bucket) follow the same pattern: own struct, keyed methods, Lua script, shared `limiter.Result`.
+
+## Core abstractions
+
+### `Limiter` (in-memory)
+
+Process-local admission contract. Implemented by `limiter/inmemory` types only — **not** by Redis.
 
 ```go
 type Limiter interface {
@@ -220,9 +315,9 @@ type Limiter interface {
 
 Batch semantics matter for APIs that consume multiple quota units per call (e.g. bulk endpoints).
 
-### `Result`
+### `Result` (shared)
 
-Rich enough for HTTP middleware without leaking algorithm internals:
+Used by both in-memory and Redis backends so middleware can read the same fields:
 
 ```go
 type Result struct {
@@ -237,9 +332,9 @@ type Result struct {
 
 **`RetryAfter`** — when `Allowed == false`, the minimum duration to wait before a single-unit `Allow()` might succeed (best-effort). Fixed/sliding window limiters usually set this to time until the window rolls or estimated load drops; token and leaky bucket limiters compute time until enough refill or leak occurs. When `Allowed == true`, `RetryAfter` is `0`. Suitable for mapping to HTTP `Retry-After` or client backoff; not a promise that the next call will succeed if other goroutines consume quota first.
 
-### `Clock`
+### `Clock` (in-memory only)
 
-Injectable time source for deterministic tests:
+Injectable time source for deterministic in-memory tests:
 
 ```go
 type Clock interface {
@@ -249,7 +344,7 @@ type Clock interface {
 type RealClock struct{} // wraps time.Now()
 ```
 
-Algorithms hold a `Clock`, defaulting to `RealClock{}`. Tests use a manual/advancing fake clock.
+Algorithms in `limiter/inmemory` hold a `Clock`, defaulting to `RealClock{}`.
 
 ## Algorithm Summary
 
@@ -260,7 +355,7 @@ Algorithms hold a `Clock`, defaulting to `RealClock{}`. Tests use a manual/advan
 | Token Bucket | O(1) | High | Controlled burst | Traffic shaping, allow spikes |
 | Leaky Bucket | O(1) | High | No burst (smooth output) | Steady output rate, queue-like |
 
-Detailed theory, tradeoffs, data structures, and edge cases are documented per algorithm below and will be reflected in source comments during implementation.
+Detailed theory, tradeoffs, data structures, and edge cases are documented per algorithm below; in-memory implementations follow these structures.
 
 ---
 
@@ -478,8 +573,8 @@ Same mutex + time-based leak pattern as Token Bucket.
 |---------|----------|
 | Lock granularity | One `sync.Mutex` per limiter instance — no shared state between instances |
 | Lock ordering | N/A (no nested locks) |
-| Hot path | `Allow()` lock → compute → unlock (in-memory); single round-trip (distributed) |
-| Keyed multi-tenant | Per-key limiter instances or key prefix in distributed backend — outside core |
+| Hot path | In-memory: mutex + compute; Redis: one `EVALSHA` round trip |
+| Keyed multi-tenant | In-memory: `manager`; Redis: `AllowKey(ctx, prefix+id)` |
 | `sync.RWMutex` | Not used — writes dominate; RWMutex adds complexity with no win here |
 
 **Why `sync.Mutex` instead of atomics?** Each `Allow()` reads the clock, updates time-derived state (refill, leak, or window rollover), and writes several fields as one logical decision. Atomics guard single-word updates, not that full read–compute–write sequence; emulating it with CAS loops on floats and timestamps adds complexity without benefit here. The critical section is a few arithmetic operations under the lock — contention is per-instance, so mutex overhead stays negligible compared to the work of correct time-based accounting.
@@ -503,28 +598,28 @@ Direct constructors in `inmemory` (e.g. `NewFixedWindow(limit, window, clock)`) 
 | Category | Approach |
 |----------|----------|
 | Unit | Fake `Clock` in `inmemory`; assert `Allow`/`AllowN` sequences |
-| Factory | `limiter_test` package: all algorithms, unknown algo, missing fields |
+| Factory | `limiter_test`: in-memory algorithms, unknown algo, missing fields |
 | Manager | Per-key isolation, max keys, purge idle/active, concurrent Get |
+| Redis | miniredis or integration: `AllowKey`, prefix, Lua correctness |
 | Boundary | Window rollovers, exact limit, limit+1 |
 | Fixed-window spike | N requests at end of window + N at start of next |
 | Concurrent | Goroutines hammering `Allow`; clean under `-race` |
-| Benchmarks | `Allow()` and `AllowN(10)` per algorithm; parallel variant |
 
 ## Implementation Status
 
 | Component | Status |
 |-----------|--------|
-| Core interface + options + validation | Done |
+| Core `Limiter` + `Result` + options + validation | Done |
 | In-memory algorithms + tests | Done |
-| Factory + backend registry | Done |
-| Manager (key cache + idle eviction) | Done |
+| In-memory factory (`NewInMemory`) | Done |
+| Manager (in-memory multi-tenant) | Done |
 | README + examples | Done |
-| Redis / Valkey backend | Planned |
+| Redis token bucket (`AllowKey` / `AllowNKey`, fail closed, key TTL) | Done |
+| Redis: other algorithms | Planned |
 
-## Out of Scope (core library)
+## Out of scope (core library)
 
 - HTTP middleware (compose with `Result.RetryAfter` in your framework)
-- Dynamic limit reconfiguration at runtime
-- Metrics / observability hooks (wrap `Limiter` in your service)
-
-Distributed backends are **not** out of scope — they are added as sibling packages under `limiter/` using the same `Spec` pattern, without changing the core contract.
+- Dynamic limit reconfiguration at runtime (in-memory: `manager.Delete(key)`; Redis: key TTL or app policy)
+- Metrics / observability hooks (wrap admission calls in your service)
+- Forcing Redis to implement `limiter.Limiter` or the in-memory factory registry
