@@ -16,7 +16,14 @@
 //	    limiter.WithWindow(time.Minute),
 //	)
 //
-// Or use the inmemory package alias:
+// Or import inmemory directly (registers algorithms via init, no blank import needed):
+//
+//	import (
+//	    "time"
+//
+//	    "github.com/swasthikshetty10/go-ratelimiter/limiter"
+//	    "github.com/swasthikshetty10/go-ratelimiter/limiter/inmemory"
+//	)
 //
 //	l, err := inmemory.New(limiter.AlgorithmSlidingWindowCounter,
 //	    limiter.WithLimit(100), limiter.WithWindow(time.Minute))
