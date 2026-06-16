@@ -18,8 +18,10 @@ type LeakyBucket struct {
 	clock      limiter.Clock
 }
 
-func NewLeakyBucket(rate float64, capacity int) *LeakyBucket {
-	clock := limiter.RealClock{}
+func NewLeakyBucket(rate float64, capacity int, clock limiter.Clock) *LeakyBucket {
+	if clock == nil {
+		clock = limiter.RealClock{}
+	}
 
 	return &LeakyBucket{
 		rate:       rate,

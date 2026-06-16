@@ -16,8 +16,10 @@ type TokenBucket struct {
 	clock      limiter.Clock
 }
 
-func NewTokenBucket(rate float64, capacity int) *TokenBucket {
-	clock := limiter.RealClock{}
+func NewTokenBucket(rate float64, capacity int, clock limiter.Clock) *TokenBucket {
+	if clock == nil {
+		clock = limiter.RealClock{}
+	}
 	return &TokenBucket{
 		rate:       rate,
 		capacity:   capacity,

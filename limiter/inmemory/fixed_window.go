@@ -16,8 +16,10 @@ type FixedWindow struct {
 	clock       limiter.Clock
 }
 
-func NewFixedWindow(limit int, window time.Duration) *FixedWindow {
-	clock := limiter.RealClock{}
+func NewFixedWindow(limit int, window time.Duration, clock limiter.Clock) *FixedWindow {
+	if clock == nil {
+		clock = limiter.RealClock{}
+	}
 	return &FixedWindow{
 		limit:       limit,
 		window:      window,

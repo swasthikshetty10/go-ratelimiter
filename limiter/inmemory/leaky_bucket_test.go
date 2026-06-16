@@ -11,7 +11,7 @@ import (
 
 func newTestLeakyBucket(t *testing.T, rate float64, capacity int, start time.Time) *LeakyBucket {
 	t.Helper()
-	lb := NewLeakyBucket(rate, capacity)
+	lb := NewLeakyBucket(rate, capacity, nil)
 	lb.clock = &fakeClock{now: start}
 	lb.lastLeak = start
 	return lb
@@ -72,7 +72,7 @@ func TestLeakyBucket_fillToCapacity(t *testing.T) {
 func TestLeakyBucket_leakOverTime(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	lb := NewLeakyBucket(10, 5) // 10 units/sec leak
+	lb := NewLeakyBucket(10, 5, nil) // 10 units/sec leak
 	lb.clock = clock
 	lb.lastLeak = start
 
@@ -101,7 +101,7 @@ func TestLeakyBucket_leakOverTime(t *testing.T) {
 func TestLeakyBucket_longIdleDrainsToEmpty(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	lb := NewLeakyBucket(10, 5)
+	lb := NewLeakyBucket(10, 5, nil)
 	lb.clock = clock
 	lb.lastLeak = start
 
@@ -201,7 +201,7 @@ func TestLeakyBucket_AllowN_zeroAndNegative(t *testing.T) {
 func TestLeakyBucket_retryAfterScalesWithExcess(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	lb := NewLeakyBucket(2, 10)
+	lb := NewLeakyBucket(2, 10, nil)
 	lb.clock = clock
 	lb.lastLeak = start
 
@@ -221,7 +221,7 @@ func TestLeakyBucket_retryAfterScalesWithExcess(t *testing.T) {
 func TestLeakyBucket_fractionalLeak(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	lb := NewLeakyBucket(10, 5)
+	lb := NewLeakyBucket(10, 5, nil)
 	lb.clock = clock
 	lb.lastLeak = start
 
@@ -257,7 +257,7 @@ func TestLeakyBucket_denyDoesNotAddVolume(t *testing.T) {
 func TestLeakyBucket_clockBackward(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	lb := NewLeakyBucket(10, 5)
+	lb := NewLeakyBucket(10, 5, nil)
 	lb.clock = clock
 	lb.lastLeak = start
 
@@ -277,7 +277,7 @@ func TestLeakyBucket_clockBackward(t *testing.T) {
 func TestLeakyBucket_zeroRateNoLeak(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	lb := NewLeakyBucket(0, 3)
+	lb := NewLeakyBucket(0, 3, nil)
 	lb.clock = clock
 	lb.lastLeak = start
 
@@ -304,7 +304,7 @@ func TestLeakyBucket_zeroRateNoLeak(t *testing.T) {
 func TestLeakyBucket_steadyAdmissionAfterFill(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	lb := NewLeakyBucket(2, 4) // 2 units/sec leak, capacity 4
+	lb := NewLeakyBucket(2, 4, nil) // 2 units/sec leak, capacity 4
 	lb.clock = clock
 	lb.lastLeak = start
 
@@ -364,7 +364,7 @@ func TestLeakyBucket_remainingNeverNegative(t *testing.T) {
 }
 
 func TestLeakyBucket_Concurrent(t *testing.T) {
-	lb := NewLeakyBucket(1000, 1000)
+	lb := NewLeakyBucket(1000, 1000, nil)
 
 	var wg sync.WaitGroup
 	const goroutines = 50
@@ -396,7 +396,7 @@ func TestLeakyBucket_ConcurrentRace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping race stress test in short mode")
 	}
-	lb := NewLeakyBucket(100, 100)
+	lb := NewLeakyBucket(100, 100, nil)
 
 	var wg sync.WaitGroup
 	for range 100 {

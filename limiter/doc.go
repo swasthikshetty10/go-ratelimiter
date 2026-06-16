@@ -1,11 +1,23 @@
-// Package limiter provides thread-safe, in-memory rate limiting algorithms
-// with zero external dependencies.
+// Package limiter provides thread-safe rate limiting with a small core contract
+// and pluggable in-memory (and future distributed) backends.
 //
-// Supported algorithms:
-//   - FixedWindow: simple fixed time-window counter
-//   - SlidingWindowCounter: O(1) approximate sliding window
-//   - TokenBucket: controlled burst with steady refill rate
-//   - LeakyBucket: smooth output with bounded queue depth
+// Create a limiter via the factory:
 //
-// See the repository README for usage examples and algorithm selection guidance.
+//	import (
+//	    "time"
+//
+//	    "github.com/swasthikshetty10/go-ratelimiter/limiter"
+//	    _ "github.com/swasthikshetty10/go-ratelimiter/limiter/inmemory"
+//	)
+//
+//	l, err := limiter.NewInMemory(
+//	    limiter.AlgorithmSlidingWindowCounter,
+//	    limiter.WithLimit(100),
+//	    limiter.WithWindow(time.Minute),
+//	)
+//
+// Or use the inmemory package alias:
+//
+//	l, err := inmemory.New(limiter.AlgorithmSlidingWindowCounter,
+//	    limiter.WithLimit(100), limiter.WithWindow(time.Minute))
 package limiter

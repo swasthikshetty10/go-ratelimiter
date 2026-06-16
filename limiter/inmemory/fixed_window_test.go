@@ -23,7 +23,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 
 func newTestFixedWindow(t *testing.T, limit int, window time.Duration, start time.Time) *FixedWindow {
 	t.Helper()
-	fw := NewFixedWindow(limit, window)
+	fw := NewFixedWindow(limit, window, nil)
 	fw.clock = &fakeClock{now: start}
 	fw.windowStart = start
 	return fw
@@ -77,7 +77,7 @@ func TestFixedWindow_Allow_atLimit(t *testing.T) {
 func TestFixedWindow_Allow_windowReset(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	fw := NewFixedWindow(2, time.Second)
+	fw := NewFixedWindow(2, time.Second, nil)
 	fw.clock = clock
 	fw.windowStart = start
 
@@ -101,7 +101,7 @@ func TestFixedWindow_Allow_windowReset(t *testing.T) {
 func TestFixedWindow_Allow_exactWindowBoundary(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	fw := NewFixedWindow(1, time.Second)
+	fw := NewFixedWindow(1, time.Second, nil)
 	fw.clock = clock
 	fw.windowStart = start
 
@@ -124,7 +124,7 @@ func TestFixedWindow_Allow_exactWindowBoundary(t *testing.T) {
 func TestFixedWindow_BoundarySpike(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	fw := NewFixedWindow(5, time.Minute)
+	fw := NewFixedWindow(5, time.Minute, nil)
 	fw.clock = clock
 	fw.windowStart = start
 
@@ -230,7 +230,7 @@ func TestFixedWindow_AllowN_zeroAndNegative(t *testing.T) {
 func TestFixedWindow_RetryAfter_decreasesOverWindow(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	fw := NewFixedWindow(1, 10*time.Second)
+	fw := NewFixedWindow(1, 10*time.Second, nil)
 	fw.clock = clock
 	fw.windowStart = start
 
@@ -250,7 +250,7 @@ func TestFixedWindow_RetryAfter_decreasesOverWindow(t *testing.T) {
 func TestFixedWindow_clockBackward(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	fw := NewFixedWindow(2, time.Second)
+	fw := NewFixedWindow(2, time.Second, nil)
 	fw.clock = clock
 	fw.windowStart = start
 
@@ -272,7 +272,7 @@ func TestFixedWindow_clockBackward(t *testing.T) {
 func TestFixedWindow_idleBeyondWindow(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	fw := NewFixedWindow(3, time.Second)
+	fw := NewFixedWindow(3, time.Second, nil)
 	fw.clock = clock
 	fw.windowStart = start
 
@@ -291,7 +291,7 @@ func TestFixedWindow_idleBeyondWindow(t *testing.T) {
 }
 
 func TestFixedWindow_Concurrent(t *testing.T) {
-	fw := NewFixedWindow(1000, time.Minute)
+	fw := NewFixedWindow(1000, time.Minute, nil)
 
 	var wg sync.WaitGroup
 	const goroutines = 50
@@ -325,7 +325,7 @@ func TestFixedWindow_ConcurrentRace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping race stress test in short mode")
 	}
-	fw := NewFixedWindow(100, time.Minute)
+	fw := NewFixedWindow(100, time.Minute, nil)
 
 	var wg sync.WaitGroup
 	for range 100 {

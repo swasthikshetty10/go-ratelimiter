@@ -10,7 +10,7 @@ import (
 
 func newTestSlidingWindowCounter(t *testing.T, limit int, window time.Duration, start time.Time) *SlidingWindowCounter {
 	t.Helper()
-	sw := NewSlidingWindowCounter(limit, window)
+	sw := NewSlidingWindowCounter(limit, window, nil)
 	sw.clock = &fakeClock{now: start}
 	sw.windowStart = start
 	return sw
@@ -63,7 +63,7 @@ func TestSlidingWindowCounter_Allow_deniesAtLimit(t *testing.T) {
 func TestSlidingWindowCounter_weightDecay(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	sw := NewSlidingWindowCounter(10, time.Minute)
+	sw := NewSlidingWindowCounter(10, time.Minute, nil)
 	sw.clock = clock
 	sw.windowStart = start
 
@@ -100,11 +100,11 @@ func TestSlidingWindowCounter_smoothingVsFixedWindowBoundary(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
 
-	sw := NewSlidingWindowCounter(10, time.Minute)
+	sw := NewSlidingWindowCounter(10, time.Minute, nil)
 	sw.clock = clock
 	sw.windowStart = start
 
-	fw := NewFixedWindow(10, time.Minute)
+	fw := NewFixedWindow(10, time.Minute, nil)
 	fw.clock = clock
 	fw.windowStart = start
 
@@ -141,7 +141,7 @@ func TestSlidingWindowCounter_smoothingVsFixedWindowBoundary(t *testing.T) {
 func TestSlidingWindowCounter_idleBeyondTwoWindows(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	sw := NewSlidingWindowCounter(5, time.Second)
+	sw := NewSlidingWindowCounter(5, time.Second, nil)
 	sw.clock = clock
 	sw.windowStart = start
 
@@ -166,7 +166,7 @@ func TestSlidingWindowCounter_idleBeyondTwoWindows(t *testing.T) {
 func TestSlidingWindowCounter_singleWindowRollover(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	sw := NewSlidingWindowCounter(10, time.Minute)
+	sw := NewSlidingWindowCounter(10, time.Minute, nil)
 	sw.clock = clock
 	sw.windowStart = start
 
@@ -191,7 +191,7 @@ func TestSlidingWindowCounter_singleWindowRollover(t *testing.T) {
 func TestSlidingWindowCounter_exactWindowBoundary(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	sw := NewSlidingWindowCounter(5, time.Second)
+	sw := NewSlidingWindowCounter(5, time.Second, nil)
 	sw.clock = clock
 	sw.windowStart = start
 
@@ -293,7 +293,7 @@ func TestSlidingWindowCounter_AllowN_zeroAndNegative(t *testing.T) {
 func TestSlidingWindowCounter_RetryAfter_decreasesOverWindow(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	sw := NewSlidingWindowCounter(1, 10*time.Second)
+	sw := NewSlidingWindowCounter(1, 10*time.Second, nil)
 	sw.clock = clock
 	sw.windowStart = start
 
@@ -313,7 +313,7 @@ func TestSlidingWindowCounter_RetryAfter_decreasesOverWindow(t *testing.T) {
 func TestSlidingWindowCounter_clockBackward(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	sw := NewSlidingWindowCounter(2, time.Second)
+	sw := NewSlidingWindowCounter(2, time.Second, nil)
 	sw.clock = clock
 	sw.windowStart = start
 
@@ -347,7 +347,7 @@ func TestSlidingWindowCounter_remainingIsAdvisory(t *testing.T) {
 }
 
 func TestSlidingWindowCounter_Concurrent(t *testing.T) {
-	sw := NewSlidingWindowCounter(1000, time.Minute)
+	sw := NewSlidingWindowCounter(1000, time.Minute, nil)
 
 	var wg sync.WaitGroup
 	const goroutines = 50
@@ -379,7 +379,7 @@ func TestSlidingWindowCounter_ConcurrentRace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping race stress test in short mode")
 	}
-	sw := NewSlidingWindowCounter(100, time.Minute)
+	sw := NewSlidingWindowCounter(100, time.Minute, nil)
 
 	var wg sync.WaitGroup
 	for range 100 {

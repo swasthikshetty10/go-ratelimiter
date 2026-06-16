@@ -17,9 +17,10 @@ type SlidingWindowCounter struct {
 	clock       limiter.Clock
 }
 
-func NewSlidingWindowCounter(limit int, window time.Duration) *SlidingWindowCounter {
-
-	clock := limiter.RealClock{}
+func NewSlidingWindowCounter(limit int, window time.Duration, clock limiter.Clock) *SlidingWindowCounter {
+	if clock == nil {
+		clock = limiter.RealClock{}
+	}
 	return &SlidingWindowCounter{
 		limit:       limit,
 		window:      window,

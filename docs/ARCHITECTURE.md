@@ -1,16 +1,17 @@
 # Architecture
 
-Production-quality, in-memory rate limiting for Go with zero external dependencies.
+Production-quality rate limiting for Go: a small core contract, functional options, and pluggable backends. The in-memory backend ships with zero external dependencies; distributed backends (Redis, Valkey, etc.) plug in via the same `Limiter` interface and factory pattern.
 
 ## Goals
 
 | Goal | Approach |
 |------|----------|
-| Thread-safe | Per-limiter `sync.Mutex`; no global locks |
-| Easy to extend | Small interface + one file per algorithm |
-| Clear separation | Core contract, algorithms, and optional keyed wrapper are distinct layers |
-| Idiomatic Go | Small structs, explicit constructors, no framework magic |
-| Testable | Deterministic time via injectable clock (Step 2) |
+| Thread-safe | Per-limiter `sync.Mutex` (in-memory); atomic Lua/scripts (distributed backends) |
+| Easy to extend | `Limiter` interface + `Spec` registry per backend + one file per algorithm |
+| Clear separation | Core contract, factory/options, backend implementations are distinct packages |
+| Idiomatic Go | Small structs, functional options, blank-import registration via `init` |
+| Testable | Injectable `Clock` on in-memory backend; fake clocks in unit tests |
+| Backend-agnostic API | Applications depend on `limiter.Limiter`, not concrete types |
 
 ## Performance Targets
 
@@ -24,19 +25,34 @@ Production-quality, in-memory rate limiting for Go with zero external dependenci
 go-ratelimiter/
 ├── go.mod
 ├── docs/
-│   └── ARCHITECTURE.md          # This document
-├── limiter/
-│   ├── limiter.go               # Core interfaces, Result, Clock
-│   ├── fixed_window.go          # Fixed Window
-│   ├── sliding_window.go        # Sliding Window Counter
-│   ├── token_bucket.go          # Token Bucket
-│   └── leaky_bucket.go          # Leaky Bucket
-├── limiter/*_test.go            # Unit, boundary, concurrent tests
-├── limiter/*_bench_test.go      # Benchmarks
-└── README.md                    # Usage guide (Step 8)
+│   └── ARCHITECTURE.md
+├── examples/
+│   └── main.go
+└── limiter/                         # Core: contract, factory, options, validation
+    ├── limiter.go                   # Limiter, Result, Clock
+    ├── algorithm.go                 # Algorithm constants
+    ├── option.go                    # WithLimit, WithWindow, WithRate, WithCapacity, WithClock
+    ├── validate.go                  # Shared validators + sentinel errors
+    ├── factory.go                   # Backend registry, NewInMemory, RegisterInMemory
+    ├── factory_test.go
+    ├── doc.go
+    └── inmemory/                    # In-process backend (zero deps)
+        ├── register.go              # init() → RegisterInMemory per algorithm
+        ├── fixed_window.go
+        ├── sliding_window_counter.go
+        ├── token_bucket.go
+        ├── leaky_bucket.go
+        └── *_test.go
 ```
 
-Single package (`limiter`) keeps the API flat. Each algorithm lives in its own file so new algorithms can be added without touching existing ones.
+Future backends follow the same shape without touching core or in-memory code:
+
+```
+limiter/redis/       # RegisterRedis + NewRedis (future)
+limiter/valkey/      # RegisterValkey + NewValkey (future)
+```
+
+Each backend package owns its `init()` registration and algorithm-specific client wiring. Algorithm implementations live in the backend package because distributed limiters embed network I/O and key semantics that in-memory limiters do not share.
 
 ## Layer Model
 
@@ -46,26 +62,99 @@ Single package (`limiter`) keeps the API flat. Each algorithm lives in its own f
 └──────────────────────────┬──────────────────────────────┘
                            │ Allow() / AllowN()
 ┌──────────────────────────▼──────────────────────────────┐
-│  Limiter interface (contract)                           │
-│  + Result (allowed, remaining, retry-after, limit)      │
+│  limiter.Limiter  +  limiter.Result                     │  ← stable contract
 └──────────────────────────┬──────────────────────────────┘
-                           │ implements
+                           │ built by
+┌──────────────────────────▼──────────────────────────────┐
+│  Factory: NewInMemory(algo, opts...)                    │
+│  Options: WithLimit, WithWindow, WithRate, ...          │
+│  Config  →  Spec.Validate  →  Spec.Build                │
+└──────────────────────────┬──────────────────────────────┘
+                           │ implements (per backend)
         ┌──────────────────┼──────────────────┐
         ▼                  ▼                  ▼
-  FixedWindow      SlidingWindowCounter   TokenBucket
-        │                  │                  │
-        └──────────────────┼──────────────────┘
-                           ▼
-                     LeakyBucket
-                           │
-┌──────────────────────────▼──────────────────────────────┐
-│  Clock (time source — real or fake for tests)           │
-└─────────────────────────────────────────────────────────┘
+   inmemory           redis (future)     valkey (future)
+   FixedWindow        same algorithms    same algorithms
+   SlidingWindow      over TCP/Lua       over TCP/Lua
+   TokenBucket
+   LeakyBucket
+        │
+        ▼ (in-memory only)
+      Clock
 ```
 
-**Optional future layer** (not in initial scope): a keyed `Manager` that maps string keys to limiter instances with LRU eviction. Algorithms stay unchanged; the manager is a thin wrapper.
+Applications import the backend they need with a blank import, then call the matching constructor. The hot path is always `Limiter.Allow()` — no factory involvement after construction.
 
-## Core Abstractions (Step 2)
+## Factory and Options
+
+### `Config`
+
+Resolved parameter bag passed to every backend builder:
+
+```go
+type Config struct {
+    Limit    int           // window algorithms
+    Window   time.Duration // window algorithms
+    Rate     float64       // bucket algorithms (units/sec)
+    Capacity int           // bucket algorithms
+    Clock    Clock         // in-memory only; ignored by distributed backends
+}
+```
+
+Not every field applies to every algorithm. Backend `Spec.Validate` enforces the required subset.
+
+### `Option`
+
+Functional options validate eagerly when applied:
+
+```go
+l, err := limiter.NewInMemory(
+    limiter.AlgorithmSlidingWindowCounter,
+    limiter.WithLimit(100),
+    limiter.WithWindow(time.Minute),
+    limiter.WithClock(testClock), // optional
+)
+```
+
+| Option | Used by |
+|--------|---------|
+| `WithLimit` + `WithWindow` | Fixed Window, Sliding Window Counter |
+| `WithRate` + `WithCapacity` | Token Bucket, Leaky Bucket |
+| `WithClock` | In-memory backends only |
+
+### `Spec` registry
+
+Each `(Backend, Algorithm)` pair registers a validator and builder:
+
+```go
+type Spec struct {
+    Validate func(Config) error
+    Build    func(Config) (Limiter, error)
+}
+```
+
+Registration happens in backend `init()` via `RegisterInMemory` (and future `RegisterRedis`, etc.). The core package holds a two-level map: `registries[Backend][Algorithm]`.
+
+Construction flow:
+
+1. `applyOptions(opts)` → `Config` (per-option validation)
+2. `spec.Validate(cfg)` → algorithm-required fields present
+3. `spec.Build(cfg)` → concrete `Limiter`
+
+Sentinel errors: `ErrUnknownBackend`, `ErrUnknownAlgorithm`, `ErrInvalidLimit`, `ErrInvalidWindow`, `ErrInvalidRate`, `ErrInvalidCapacity`.
+
+### Adding a distributed backend
+
+To add Redis (same pattern for Valkey):
+
+1. Create `limiter/redis/` with a `Limiter` implementation per algorithm (Lua script or `INCR` + `PEXPIRE`).
+2. In `init()`, call `RegisterRedis(algo, Spec{Validate, Build})` — mirror `RegisterInMemory`.
+3. Expose `NewRedis(algo, opts ...Option)` delegating to `newLimiter(BackendRedis, ...)`.
+4. Add backend-specific options in the redis package (e.g. `WithClient`, `WithKey`) that wrap or extend `Config` before `Build`.
+
+Distributed implementations **must** return the same `Result` semantics documented below so middleware works unchanged. `WithClock` does not apply; time comes from the server.
+
+## Core Abstractions
 
 ### `Limiter`
 
@@ -147,16 +236,16 @@ Window 1          Window 2          Window 3
 | O(1) time and space | No burst control within a window |
 | Easy to reason about | Less fair than sliding approaches |
 
-### Data Structure
+### Data Structure (inmemory)
 
 ```go
 type FixedWindow struct {
-    mu       sync.Mutex
-    limit    int
-    window   time.Duration
-    count    int
+    mu          sync.Mutex
+    limit       int
+    window      time.Duration
+    count       int
     windowStart time.Time
-    clock    Clock
+    clock       limiter.Clock
 }
 ```
 
@@ -168,8 +257,7 @@ Single mutex guards `count` and `windowStart`. All mutations happen inside the l
 
 - **Window rollover**: on `Allow`, if `now - windowStart >= window`, reset `count = 0` and set `windowStart = truncate(now, window)` (or `now` for simplicity).
 - **AllowN(n) where n > limit**: always reject; never partial admit.
-- **Zero or negative limit**: constructor returns error or panics (prefer error — decided in Step 2).
-- **Zero window duration**: invalid; reject at construction.
+- **Zero or negative limit/window**: rejected by `WithLimit` / `WithWindow` or `ValidateLimitAndWindow`.
 - **Clock going backwards**: treat as same window (do not reset counter on backward jump).
 
 ---
@@ -207,17 +295,17 @@ The **sliding window counter** keeps two counts and one window boundary — **O(
 | Smooths fixed-window spikes | Slightly more complex than fixed window |
 | Exact log impractical at high limits or many keys | Two windows of history needed at boundaries |
 
-### Data Structure
+### Data Structure (inmemory)
 
 ```go
 type SlidingWindowCounter struct {
     mu          sync.Mutex
     limit       int
     window      time.Duration
-    currCount   int
-    prevCount   int
+    currCount   float64
+    prevCount   float64
     windowStart time.Time
-    clock       Clock
+    clock       limiter.Clock
 }
 ```
 
@@ -257,20 +345,18 @@ capacity ──────────────── max burst
 | Industry standard (network QoS) | `RetryAfter` requires computing time until enough tokens refill |
 | Smooth long-term rate | Two knobs (rate, capacity) can confuse users |
 
-### Data Structure
+### Data Structure (inmemory)
 
 ```go
 type TokenBucket struct {
-    mu       sync.Mutex
-    rate     float64       // tokens per second (or use rational: tokens + interval)
-    capacity int
-    tokens   float64       // current token count (fractional refill is correct)
+    mu         sync.Mutex
+    rate       float64
+    capacity   int
+    tokens     float64
     lastRefill time.Time
-    clock    Clock
+    clock      limiter.Clock
 }
 ```
-
-Alternative: store `rate` as `int` tokens per `time.Duration` refill interval to avoid float drift — evaluate in Step 5.
 
 ### Concurrency
 
@@ -311,16 +397,16 @@ Distinct from Token Bucket: leaky bucket limits how much **queued** work can acc
 | Natural back-pressure model | Less common for HTTP rate limiting than token bucket |
 | Simple queue-depth semantics | "Leaky" vs "token" confusion in naming |
 
-### Data Structure
+### Data Structure (inmemory)
 
 ```go
 type LeakyBucket struct {
-    mu       sync.Mutex
-    rate     float64       // leaks per second (or rational interval)
-    capacity int           // max queued volume
-    volume   float64       // current fill level
-    lastLeak time.Time
-    clock    Clock
+    mu         sync.Mutex
+    rate       float64
+    capacity   int
+    currVolume float64
+    lastLeak   time.Time
+    clock      limiter.Clock
 }
 ```
 
@@ -344,58 +430,52 @@ Same mutex + time-based leak pattern as Token Bucket.
 |---------|----------|
 | Lock granularity | One `sync.Mutex` per limiter instance — no shared state between instances |
 | Lock ordering | N/A (no nested locks) |
-| Hot path | `Allow()` lock → compute → unlock; no I/O, no allocations |
-| Keyed multi-tenant | Future `Manager` with `sync.Map` or sharded mutexes — out of scope for v1 |
+| Hot path | `Allow()` lock → compute → unlock (in-memory); single round-trip (distributed) |
+| Keyed multi-tenant | Per-key limiter instances or key prefix in distributed backend — outside core |
 | `sync.RWMutex` | Not used — writes dominate; RWMutex adds complexity with no win here |
 
 **Why `sync.Mutex` instead of atomics?** Each `Allow()` reads the clock, updates time-derived state (refill, leak, or window rollover), and writes several fields as one logical decision. Atomics guard single-word updates, not that full read–compute–write sequence; emulating it with CAS loops on floats and timestamps adds complexity without benefit here. The critical section is a few arithmetic operations under the lock — contention is per-instance, so mutex overhead stays negligible compared to the work of correct time-based accounting.
 
-## Validation (Constructors)
+## Validation
 
-All constructors follow:
+Validation is two-stage:
 
-```go
-func NewFixedWindow(limit int, window time.Duration, opts ...Option) (*FixedWindow, error)
-```
+1. **Option time** — `WithLimit`, `WithWindow`, `WithRate`, `WithCapacity` reject invalid individual values when the option is applied.
+2. **Build time** — `Spec.Validate` ensures algorithm-required fields are set:
 
-Shared validation (internal helper):
+| Algorithm | Validator |
+|-----------|-----------|
+| Fixed Window, Sliding Window Counter | `ValidateLimitAndWindow` |
+| Token Bucket, Leaky Bucket | `ValidateRateAndCapacity` |
 
-- `limit > 0`
-- `window > 0` (where applicable)
-- `rate > 0` (token/leaky bucket)
+Direct constructors in `inmemory` (e.g. `NewFixedWindow(limit, window, clock)`) accept pre-validated values; the factory is the recommended entry point for applications.
 
-Functional options (optional, Step 2):
-
-```go
-WithClock(c Clock)
-```
-
-## Testing Strategy (Step 7)
+## Testing Strategy
 
 | Category | Approach |
 |----------|----------|
-| Unit | Fake clock; assert Allow/AllowN sequences |
+| Unit | Fake `Clock` in `inmemory`; assert `Allow`/`AllowN` sequences |
+| Factory | `limiter_test` package: all algorithms, unknown algo, missing fields |
 | Boundary | Window rollovers, exact limit, limit+1 |
 | Fixed-window spike | N requests at end of window + N at start of next |
-| Concurrent | `testing.B` + goroutines hammering Allow; no race (`-race`) |
-| Benchmarks | `Allow()` and `AllowN(10)` per algorithm; parallel benchmark variant |
+| Concurrent | Goroutines hammering `Allow`; clean under `-race` |
+| Benchmarks | `Allow()` and `AllowN(10)` per algorithm; parallel variant |
 
-## Implementation Order
+## Implementation Status
 
-1. **Architecture** ← current step
-2. Interface design (`limiter.go`, `Clock`, `Result`, options, validation)
-3. Fixed Window — simplest, validates the contract
-4. Sliding Window Counter — builds on window rollover patterns
-5. Token Bucket — introduces continuous refill math
-6. Leaky Bucket — mirror of token bucket with inverted semantics
-7. Tests and benchmarks
-8. README with usage examples and algorithm selection guide
+| Step | Status |
+|------|--------|
+| Architecture | Done |
+| Interface + options + validation | Done |
+| In-memory algorithms + tests | Done |
+| Factory + backend registry | Done |
+| README | Pending |
+| Distributed backends (Redis, Valkey) | Planned — extension path documented above |
 
-## Non-Goals (v1)
+## Out of Scope (core library)
 
-- Distributed / Redis-backed limiters
-- HTTP middleware (users compose with `Result.RetryAfter`)
+- HTTP middleware (compose with `Result.RetryAfter` in your framework)
 - Dynamic limit reconfiguration at runtime
-- Metrics / observability hooks (easy to wrap later)
+- Metrics / observability hooks (wrap `Limiter` in your service)
 
-These can be added as separate packages without changing algorithm internals.
+Distributed backends are **not** out of scope — they are added as sibling packages under `limiter/` using the same `Spec` pattern, without changing the core contract.

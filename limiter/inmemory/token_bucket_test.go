@@ -11,7 +11,7 @@ import (
 
 func newTestTokenBucket(t *testing.T, rate float64, capacity int, start time.Time) *TokenBucket {
 	t.Helper()
-	tb := NewTokenBucket(rate, capacity)
+	tb := NewTokenBucket(rate, capacity, nil)
 	tb.clock = &fakeClock{now: start}
 	tb.lastRefill = start
 	return tb
@@ -66,7 +66,7 @@ func TestTokenBucket_initialBurst(t *testing.T) {
 func TestTokenBucket_refillOverTime(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(10, 10) // 10 tokens/sec, capacity 10
+	tb := NewTokenBucket(10, 10, nil) // 10 tokens/sec, capacity 10
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -95,7 +95,7 @@ func TestTokenBucket_refillOverTime(t *testing.T) {
 func TestTokenBucket_refillCappedAtCapacity(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(1, 5) // 1 token/sec, capacity 5
+	tb := NewTokenBucket(1, 5, nil) // 1 token/sec, capacity 5
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -190,7 +190,7 @@ func TestTokenBucket_AllowN_zeroAndNegative(t *testing.T) {
 func TestTokenBucket_retryAfterScalesWithMissingTokens(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(2, 10) // 2 tokens/sec
+	tb := NewTokenBucket(2, 10, nil) // 2 tokens/sec
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -209,7 +209,7 @@ func TestTokenBucket_retryAfterScalesWithMissingTokens(t *testing.T) {
 func TestTokenBucket_fractionalRefill(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(10, 10)
+	tb := NewTokenBucket(10, 10, nil)
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -250,7 +250,7 @@ func TestTokenBucket_denyDoesNotConsumeTokens(t *testing.T) {
 func TestTokenBucket_clockBackward(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(10, 5)
+	tb := NewTokenBucket(10, 5, nil)
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -272,7 +272,7 @@ func TestTokenBucket_clockBackward(t *testing.T) {
 func TestTokenBucket_zeroRateNoRefill(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(0, 3)
+	tb := NewTokenBucket(0, 3, nil)
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -299,7 +299,7 @@ func TestTokenBucket_zeroRateNoRefill(t *testing.T) {
 func TestTokenBucket_steadyRateAfterBurst(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(2, 4) // 2/sec, burst 4
+	tb := NewTokenBucket(2, 4, nil) // 2/sec, burst 4
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -327,7 +327,7 @@ func TestTokenBucket_steadyRateAfterBurst(t *testing.T) {
 func TestTokenBucket_remainingNeverExceedsCapacity(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(100, 5)
+	tb := NewTokenBucket(100, 5, nil)
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -343,7 +343,7 @@ func TestTokenBucket_denyCheckUsesCappedTokens(t *testing.T) {
 	// Regression: uncapped refill math must not allow n > capacity after long idle.
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(100, 5)
+	tb := NewTokenBucket(100, 5, nil)
 	tb.clock = clock
 	tb.lastRefill = start
 
@@ -367,7 +367,7 @@ func TestTokenBucket_denyCheckUsesCappedTokens(t *testing.T) {
 }
 
 func TestTokenBucket_Concurrent(t *testing.T) {
-	tb := NewTokenBucket(1000, 1000)
+	tb := NewTokenBucket(1000, 1000, nil)
 
 	var wg sync.WaitGroup
 	const goroutines = 50
@@ -399,7 +399,7 @@ func TestTokenBucket_ConcurrentRace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping race stress test in short mode")
 	}
-	tb := NewTokenBucket(100, 100)
+	tb := NewTokenBucket(100, 100, nil)
 
 	var wg sync.WaitGroup
 	for range 100 {
@@ -416,7 +416,7 @@ func TestTokenBucket_ConcurrentRace(t *testing.T) {
 func TestTokenBucket_retryAfterWithinTolerance(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	clock := &fakeClock{now: start}
-	tb := NewTokenBucket(3, 5)
+	tb := NewTokenBucket(3, 5, nil)
 	tb.clock = clock
 	tb.lastRefill = start
 
