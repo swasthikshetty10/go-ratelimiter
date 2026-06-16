@@ -2,6 +2,8 @@
 
 Production-quality rate limiting for Go: a small core contract, functional options, and pluggable backends. The in-memory backend ships with zero external dependencies; distributed backends (Redis, Valkey, etc.) plug in via the same `Limiter` interface and factory pattern.
 
+User-facing overview and quick start: [README.md](../README.md).
+
 ## Goals
 
 | Goal | Approach |
@@ -24,25 +26,32 @@ Production-quality rate limiting for Go: a small core contract, functional optio
 ```
 go-ratelimiter/
 ├── go.mod
+├── README.md
 ├── docs/
 │   └── ARCHITECTURE.md
 ├── examples/
-│   └── main.go
-└── limiter/                         # Core: contract, factory, options, validation
-    ├── limiter.go                   # Limiter, Result, Clock
-    ├── algorithm.go                 # Algorithm constants
-    ├── option.go                    # WithLimit, WithWindow, WithRate, WithCapacity, WithClock
-    ├── validate.go                  # Shared validators + sentinel errors
-    ├── factory.go                   # Backend registry, NewInMemory, RegisterInMemory
-    ├── factory_test.go
+│   ├── README.md
+│   ├── basic/           # single limiter
+│   ├── batch/           # AllowN
+│   ├── middleware/      # per-user handler
+│   └── manager/         # dynamic limits + eviction
+├── limiter/             # Core: contract, factory, options, validation
+│   ├── limiter.go
+│   ├── algorithm.go
+│   ├── option.go
+│   ├── validate.go
+│   ├── factory.go
+│   └── inmemory/        # In-process backend (zero deps)
+│       ├── register.go
+│       ├── fixed_window.go
+│       ├── sliding_window_counter.go
+│       ├── token_bucket.go
+│       ├── leaky_bucket.go
+│       └── *_test.go
+└── manager/             # Optional key → limiter cache (in-memory multi-tenant)
+    ├── manager.go
     ├── doc.go
-    └── inmemory/                    # In-process backend (zero deps)
-        ├── register.go              # init() → RegisterInMemory per algorithm
-        ├── fixed_window.go
-        ├── sliding_window_counter.go
-        ├── token_bucket.go
-        ├── leaky_bucket.go
-        └── *_test.go
+    └── manager_test.go
 ```
 
 Future backends follow the same shape without touching core or in-memory code:
@@ -64,7 +73,7 @@ Each backend package owns its `init()` registration and algorithm-specific clien
 ┌──────────────────────────▼──────────────────────────────┐
 │  limiter.Limiter  +  limiter.Result                     │  ← stable contract
 └──────────────────────────┬──────────────────────────────┘
-                           │ built by
+                           │ optional: manager.Get(key)
 ┌──────────────────────────▼──────────────────────────────┐
 │  Factory: NewInMemory(algo, opts...)                    │
 │  Options: WithLimit, WithWindow, WithRate, ...          │
@@ -74,16 +83,55 @@ Each backend package owns its `init()` registration and algorithm-specific clien
         ┌──────────────────┼──────────────────┐
         ▼                  ▼                  ▼
    inmemory           redis (future)     valkey (future)
-   FixedWindow        same algorithms    same algorithms
-   SlidingWindow      over TCP/Lua       over TCP/Lua
-   TokenBucket
-   LeakyBucket
         │
         ▼ (in-memory only)
       Clock
 ```
 
-Applications import the backend they need with a blank import, then call the matching constructor. The hot path is always `Limiter.Allow()` — no factory involvement after construction.
+Applications import the backend they need, then call the matching constructor. The hot path is always `Limiter.Allow()` — no factory or manager involvement after lookup.
+
+## Manager (multi-tenant, in-memory)
+
+Top-level `manager/` package — optional, not part of the core limiter contract.
+
+```
+Application derives key (user ID, API key, tenant:user)
+        │
+        ▼
+  manager.Get(key)     ← updates lastAccess every call
+        │
+        ▼
+  limiter.Allow()
+```
+
+| Responsibility | Owner |
+|----------------|-------|
+| Key format, JWT, tenant identity | Application |
+| Plan / tier / limit resolution | Application (`Config.NewLimiter`) |
+| Lazy create, cache, idle eviction | Manager |
+
+### Configuration
+
+```go
+manager.Config{
+    NewLimiter: func(key string) (limiter.Limiter, error) { ... },
+    MaxKeys:    10_000,           // 0 = unlimited
+    MaxIdle:    30 * time.Minute, // 0 = no idle eviction
+}
+```
+
+### Idle eviction
+
+TTL on **last access** only — no algorithm-specific idle checks:
+
+- `Purge()` — sweep entries where `now - lastAccess > MaxIdle`
+- `RunPurge(ctx, interval)` — background sweeper (default interval: 5 minutes)
+
+Purge uses `CompareAndSwap` on `lastAccess` to avoid evicting a key touched concurrently during sweep.
+
+**Do not use manager with Redis** — pass the tenant key directly to the distributed limiter instead.
+
+See [examples/manager/](../examples/manager/) and [examples/middleware/](../examples/middleware/).
 
 ## Factory and Options
 
@@ -456,6 +504,7 @@ Direct constructors in `inmemory` (e.g. `NewFixedWindow(limit, window, clock)`) 
 |----------|----------|
 | Unit | Fake `Clock` in `inmemory`; assert `Allow`/`AllowN` sequences |
 | Factory | `limiter_test` package: all algorithms, unknown algo, missing fields |
+| Manager | Per-key isolation, max keys, purge idle/active, concurrent Get |
 | Boundary | Window rollovers, exact limit, limit+1 |
 | Fixed-window spike | N requests at end of window + N at start of next |
 | Concurrent | Goroutines hammering `Allow`; clean under `-race` |
@@ -463,14 +512,14 @@ Direct constructors in `inmemory` (e.g. `NewFixedWindow(limit, window, clock)`) 
 
 ## Implementation Status
 
-| Step | Status |
-|------|--------|
-| Architecture | Done |
-| Interface + options + validation | Done |
+| Component | Status |
+|-----------|--------|
+| Core interface + options + validation | Done |
 | In-memory algorithms + tests | Done |
 | Factory + backend registry | Done |
-| README | Pending |
-| Distributed backends (Redis, Valkey) | Planned — extension path documented above |
+| Manager (key cache + idle eviction) | Done |
+| README + examples | Done |
+| Redis / Valkey backend | Planned |
 
 ## Out of Scope (core library)
 
